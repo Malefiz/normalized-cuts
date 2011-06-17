@@ -11,11 +11,13 @@
 #include <tclap/CmdLine.h>
 #include <cmath>
 #include <boost/numeric/ublas/symmetric.hpp>
+#include <boost/numeric/ublas/matrix_sparse.hpp>
 #include <boost/numeric/ublas/io.hpp>
 #include <ietl/interface/ublas.h>
 #include <ietl/vectorspace.h>
 #include <ietl/lanczos.h>
 #include <boost/random.hpp>
+#include <boost/tuple/tuple.hpp>
 #include <boost/limits.hpp>
 #include <cmath>
 #include <limits>
@@ -23,25 +25,30 @@
 using namespace std;
 using namespace TCLAP;
 using namespace cv;
+using namespace boost::numeric;
+using namespace boost;
+using namespace ietl;
 
-typedef boost::numeric::ublas::symmetric_matrix<double, boost::numeric::ublas::lower> UBMat;
-typedef boost::numeric::ublas::vector<double> UBVector;
+typedef ublas::compressed_matrix<double> UBMat;
+typedef ublas::vector<double> UBVector;
 
-double distanceAffinity(double x1, double y1, double x2, double y2,double scale)
+inline double distanceAffinity(double x1, double y1, double x2, double y2,double scale)
 {
 	return -(x1-x2)*(x1-x2)+(y1-y2)*(y1-y2)/scale;
 
 }
 
-double intensityAffinity(double i1, double i2, double scale)
+inline double intensityAffinity(double i1, double i2, double scale)
 {
 	return -(i1-i2)*(i1-i2)/scale;
 }
 
-double colorAffinity(Vec3b& x, Vec3b& y,double scale)
+template <typename T,int c>
+inline double vecAffinity(const cv::Vec<T,c>& x,const cv::Vec<T,c>& y,double scale)
 {
 	return - (x-y).dot(x-y)/scale;
 }
+
 
 Mat getGaussianKernel2D(double sigma1, double sigma2, double angle, int size)
 {
@@ -142,17 +149,234 @@ Mat_<Vec<double,33> > filterImage(Mat img, vector<Ptr<FilterEngine> > filterBank
 
 }
 
-void createAffinityMatrix(UBMat& A, Mat img, double sparsity_factor=0.8)
+/**
+ * @param A affinity matrix
+ * @param img the image
+ * @param scale1/2/3 the scale factor for the affinity calculation
+ * @param sparsity_factor number of sample standard deviations to use as a cutoff criterion
+ */
+void createAffinityMatrix(Mat img, double scale1, double scale2, double scale3, UBMat& A, UBMat& N,  double sparsity_factor=0.1)
 {
-	Mat filteredImg = filterImage(img,createFilterBank(11));
-	A.resize((size_t)img.rows*img.cols,(size_t)img.rows*img.cols);
+	int size=(size_t)img.rows*img.cols;
+	Mat_<Vec<double,33> > filteredImg = filterImage(img,createFilterBank(11));
+	A.resize(size,size);
+	//dry run/ calculate sample standard deviation
+	//for each pixel affinity to each other pixel
+	double s2=0;
+	double s3=0;
+	double mean=0;
 	for(int r=0;r<img.rows;r++)
 	{
 		for(int c=0;c<img.cols;c++)
 		{
-
+			for(int i=0;i<img.rows;i++)
+			{
+				for(int j=0;j<img.cols;j++)
+				{
+					double affinity=distanceAffinity(r,c,i,j,scale1);
+					affinity+=vecAffinity<uchar,3>(img.at<Vec3b>(r,c),img.at<Vec3b>(i,j),scale2);
+					affinity+=vecAffinity<double,33>(filteredImg(r,c),filteredImg(i,j),scale3);
+					affinity=exp(affinity);
+					s2+=affinity;
+					s3+=affinity*affinity;
+					mean+=affinity;
+				}
+			}
 		}
 	}
+	mean/=size;
+	double cutoff = sparsity_factor*sqrt(s2*(size*s3/s2-s2))/size;
+	//actual affinity matrix construction
+	for(int r=0;r<img.rows;r++)
+	{
+		for(int c=0;c<img.cols;c++)
+		{
+			for(int i=0;i<img.rows;i++)
+			{
+				for(int j=0;j<img.cols;j++)
+				{
+					double affinity=distanceAffinity(r,c,i,j,scale1);
+					affinity+=vecAffinity<uchar,3>(img.at<Vec3b>(r,c),img.at<Vec3b>(i,j),scale2);
+					affinity+=vecAffinity<double,33>(filteredImg(r,c),filteredImg(i,j),scale3);
+					affinity=exp(affinity);
+					if(fabs(mean-affinity)<cutoff)
+						A(r*img.cols+c,i*img.cols+j)=affinity;
+				}
+			}
+		}
+	}
+	//Create normalized affinity matrix
+	UBMat D((size_t)img.rows*img.cols,(size_t)img.rows*img.cols);
+	for(int i=0;i<size;i++)
+	{
+		double degree=0.0;
+		for(int j=0;j<size;j++)
+		{
+			degree+=A(i,j);
+		}
+		D(i,i)=1.0/sqrt(degree);
+	}
+	N=prod(A,D);
+	N=prod(D,N);
+}
+
+
+UBVector eigenSolve(UBMat& N)
+{
+
+	vectorspace<UBVector> vec(N.size1());
+	lagged_fibonacci607 mygen;
+	lanczos<UBMat,vectorspace<UBVector> > solver(N,vec);
+
+	//First we compute the two lowest eigenvalues, the lowest is guaranteed to be 0
+	//The second smallest is what we are looking for
+	int max_iter = 10*N.size1();
+	double rel_tol = 500*numeric_limits<double>::epsilon();
+	double abs_tol = pow(numeric_limits<double>::epsilon(),2./3);
+	int n_lowest_eigenval = 2;
+	vector<double> eigen;
+	vector<double> err;
+	//std::vector<int> multiplicity;
+	lanczos_iteration_nlowest<double> iter(max_iter,n_lowest_eigenval,rel_tol,abs_tol);
+
+	solver.calculate_eigenvalues(iter,mygen);
+	eigen = solver.eigenvalues();
+	err = solver.errors();
+	//multiplicity = solver.multiplicities();
+
+	assert(eigen.at(0)<eigen.at(1));
+
+	//Now we compute the eigenvector belonging to the second largest eigenvalue
+
+	vector<UBVector> eigenvectors;
+	Info<double> info;
+	solver.eigenvectors(eigen.begin()+1,eigen.end(),back_inserter(eigenvectors),info,mygen);
+
+	return eigenvectors.at(0);
+}
+
+double cut(UBMat& A, UBVector& v, double threshold)
+{
+	double cut=0.0;
+	for(int i=0;i<v.size();i++)
+	{
+		bool lower=v(i)<threshold;
+		for(int j=0;j<v.size();j++)
+		{
+			if(lower && v(j)>=threshold)
+				cut+=A(i,j);
+		}
+	}
+	return cut;
+}
+
+double assoc(UBMat& A, UBVector& v, double threshold,bool a)
+{
+	double cut=0.0;
+	for(int i=0;i<v.size();i++)
+	{
+		bool lower;
+		if(a)
+			lower=v(i)<threshold;
+		else
+			lower=v(i)>=threshold;
+		if(lower)
+		{
+			for(int j=0;j<v.size();j++)
+			{
+				cut+=A(i,j);
+			}
+		}
+	}
+	return cut;
+}
+
+inline void indexToRowCol(int index, int cols, int& row, int& col)
+{
+	row=index/cols;
+	col=index/cols;
+}
+
+Mat_<uchar> getMask(Mat img, UBVector& v, UBMat& A)
+{
+	//find best threshold
+	double best_threshold=0.0;
+	double lowest_cost=DBL_MAX;
+	for(int i=0;i<v.size();i++)
+	{
+		double threshold=v(i);
+		double cutAB = cut(A,v,threshold);
+		double assocAV = assoc(A,v,threshold,true);
+		double assocBV = assoc(A,v,threshold,false);
+		double cost = cutAB/assocAV + cutAB/assocBV;
+		if(cost<lowest_cost)
+		{
+			lowest_cost=cost;
+			best_threshold=threshold;
+		}
+	}
+	Mat_<uchar> mask(img.rows,img.cols);
+	//create Mask
+	for(int i=0;i<v.size();i++)
+	{
+		int r,c;
+		indexToRowCol(i,img.cols,r,c);
+		if(v(i)<best_threshold)
+		{
+			mask(r,c)=1;
+		}
+		else
+		{
+			mask(r,c)=0;
+		}
+	}
+	return mask;
+}
+
+tuple<Mat,Mat> segment(Mat_<uchar> mask, Mat img)
+{
+	Mat A(img.size().width,img.size().height,CV_8UC3);
+	Mat B(img.size().width,img.size().height,CV_8UC3);
+
+	for(int i=0;i<mask.size().width;i++)
+	{
+		for(int j=0;j<mask.size().height;j++)
+		{
+			if(mask(i,j)==0)
+			{
+				A.at<Vec3b>(i,j)=Vec3b(0,0,0);
+			}else
+			{
+				A.at<Vec3b>(i,j)=img.at<Vec3b>(i,j);
+			}
+		}
+	}
+
+
+	Mat_<uchar> inv_mask(mask.size().width,mask.size().height);
+	for(int i=0;i<mask.size().width;i++)
+	{
+		for(int j=0;j<mask.size().height;j++)
+		{
+			inv_mask(i,j)=1-mask(i,j);
+		}
+	}
+
+	for(int i=0;i<inv_mask.size().width;i++)
+	{
+		for(int j=0;j<inv_mask.size().height;j++)
+		{
+			if(inv_mask(i,j)==0)
+			{
+				B.at<Vec3b>(i,j)=Vec3b(0,0,0);
+			}else
+			{
+				B.at<Vec3b>(i,j)=img.at<Vec3b>(i,j);
+			}
+		}
+	}
+
+	return tuple<Mat,Mat>(A,B);
 }
 
 int main(int argc, char ** argv)
