@@ -29,63 +29,69 @@ using namespace boost::numeric;
 using namespace boost;
 using namespace ietl;
 
-typedef ublas::compressed_matrix<double> UBMat;
-typedef ublas::vector<double> UBVector;
+typedef double FP_Type;
+typedef Vec3d Point_Type;
 
-inline double distanceAffinity(double x1, double y1, double x2, double y2,double scale)
+
+typedef ublas::compressed_matrix<FP_Type> UBMat;
+typedef ublas::vector<FP_Type> UBVector;
+
+
+
+inline FP_Type distanceAffinity(FP_Type x1, FP_Type y1, FP_Type x2, FP_Type y2,FP_Type scale)
 {
-	return -(x1-x2)*(x1-x2)+(y1-y2)*(y1-y2)/scale;
+	return -((x1-x2)*(x1-x2)+(y1-y2)*(y1-y2))/scale;
 
 }
 
-inline double intensityAffinity(double i1, double i2, double scale)
+inline FP_Type intensityAffinity(FP_Type i1, FP_Type i2, FP_Type scale)
 {
 	return -(i1-i2)*(i1-i2)/scale;
 }
 
 template <typename T,int c>
-inline double vecAffinity(const cv::Vec<T,c>& x,const cv::Vec<T,c>& y,double scale)
+inline FP_Type vecAffinity(const cv::Vec<T,c>& x,const cv::Vec<T,c>& y,FP_Type scale)
 {
 	return - (x-y).dot(x-y)/scale;
 }
 
 
-Mat getGaussianKernel2D(double sigma1, double sigma2, double angle, int size)
+Mat_<FP_Type> getGaussianKernel2D(FP_Type sigma1, FP_Type sigma2, FP_Type angle, int size)
 {
 	assert(size%2==1);
-	Mat rot = getRotationMatrix2D(Point2f(size/2+1.0,size/2+1.0),angle,1.0);
-	Mat sigma(3,2,CV_64FC1);
-	sigma.at<double>(0,0)=1.0/sigma1;
-	sigma.at<double>(0,1)=0;
-	sigma.at<double>(1,0)=0;
-	sigma.at<double>(1,1)=1.0/sigma2;
-	sigma.at<double>(2,0)=0.0;
-	sigma.at<double>(2,1)=0.0;
+	Mat_<FP_Type> rot = getRotationMatrix2D(Point2f(size/2+1.0,size/2+1.0),angle,1.0);
+	Mat_<FP_Type> sigma(3,2);
+	sigma(0,0)=1.0/sigma1;
+	sigma(0,1)=0;
+	sigma(1,0)=0;
+	sigma(1,1)=1.0/sigma2;
+	sigma(2,0)=0.0;
+	sigma(2,1)=0.0;
 
-	Mat invsigma=rot*sigma;
-	double factor = 1.0/(2.0*M_PI*sqrt(sigma1*sigma2));
-	Mat mu(2,1,CV_64FC1);
-	mu.at<double>(0)=size/2+1.0;
-	mu.at<double>(1)=size/2+1.0;
+	Mat_<FP_Type> invsigma=rot*sigma;
+	FP_Type factor = 1.0/(2.0*M_PI*sqrt(sigma1*sigma2));
+	Mat_<FP_Type> mu(2,1);
+	mu(0)=size/2+1.0;
+	mu(1)=size/2+1.0;
 
-	Mat kernel(size,size,CV_64FC1);
-	Mat x(2,1,CV_64FC1);
+	Mat_<FP_Type> kernel(size,size);
+	Mat_<FP_Type> x(2,1);
 	for(int r=0;r<size;r++)
 	{
-		double * row=kernel.ptr<double>(r);
+		FP_Type * row=(FP_Type*)kernel.ptr(r);
 		for(int c=0;c<size;c++)
 		{
-			x.at<double>(0)=r;
-			x.at<double>(1)=c;
-			Mat tmp=invsigma*(x-mu);
-			double m=(x-mu).dot(tmp);
+			x(0)=r;
+			x(1)=c;
+			Mat_<FP_Type> tmp=invsigma*(x-mu);
+			FP_Type m=(x-mu).dot(tmp);
 			row[c]=factor*exp(-0.5*m);
 		}
 	}
 	return kernel;
 }
 
-Mat getDoGKernel2D(double sigma1, double sigma2, double angle,int size,double K)
+Mat_<FP_Type> getDoGKernel2D(FP_Type sigma1, FP_Type sigma2, FP_Type angle,int size,FP_Type K)
 {
 	return getGaussianKernel2D(sigma1,sigma2,angle,size)-getGaussianKernel2D(K*sigma1,K*sigma2,angle,size);
 }
@@ -112,29 +118,30 @@ vector<Ptr<FilterEngine> > createFilterBank(int size)
 
 }
 
-Mat_<Vec<double,33> > filterImage(Mat img, vector<Ptr<FilterEngine> > filterBank)
+Mat_<Vec<FP_Type,33> > filterImage(Mat_<Point_Type> img, vector<Ptr<FilterEngine> > filterBank)
 {
 	assert(filterBank.size()==11);
-	assert(img.type()==CV_64FC3);
 	assert(img.channels()==3);
-	Mat_<Vec<double,33> > filteredAll(img.rows,img.cols);
+	Mat_<Vec<FP_Type,33> > filteredAll(img.rows,img.cols);
 
 	namedWindow("Filtered",WINDOW_AUTOSIZE);
 
 	int f=0;
-	Mat filtered(img.rows,img.cols,img.type());
+	Mat_<Point_Type> filtered(img.rows,img.cols);
 	for(vector<Ptr<FilterEngine> >::const_iterator iter=filterBank.begin();
 			iter!=filterBank.end();
 			iter++,f++
 			)
 	{
 		Ptr<FilterEngine> filter = *iter;
-
+		Mat_<Point_Type> myimg(2,2);
+		const Mat& myotherimg=myimg;
+		CV_Assert( img.type() == myimg.type());
 		filter->apply(img,filtered);
 		imshow("Filtered",filtered);
 		for(int r=0;r<img.rows;r++)
 		{
-			double * filteredRow = filtered.ptr<double>(r);
+			FP_Type * filteredRow = (FP_Type*)filtered.ptr(r);
 			for(int c=0;c<img.cols;c++)
 			{
 				for(int channel=0;channel<3;channel++)
@@ -155,37 +162,11 @@ Mat_<Vec<double,33> > filterImage(Mat img, vector<Ptr<FilterEngine> > filterBank
  * @param scale1/2/3 the scale factor for the affinity calculation
  * @param sparsity_factor number of sample standard deviations to use as a cutoff criterion
  */
-void createAffinityMatrix(Mat img, double scale1, double scale2, double scale3, UBMat& A, UBMat& N,  double sparsity_factor=0.1)
+void createAffinityMatrix(Mat_<Point_Type>  img, FP_Type scale1, FP_Type scale2, FP_Type scale3, UBMat& A, UBMat& N, UBMat& D,  FP_Type sparsity_factor=0.01)
 {
 	int size=(size_t)img.rows*img.cols;
-	Mat_<Vec<double,33> > filteredImg = filterImage(img,createFilterBank(11));
-	A.resize(size,size);
-	//dry run/ calculate sample standard deviation
-	//for each pixel affinity to each other pixel
-	double s2=0;
-	double s3=0;
-	double mean=0;
-	for(int r=0;r<img.rows;r++)
-	{
-		for(int c=0;c<img.cols;c++)
-		{
-			for(int i=0;i<img.rows;i++)
-			{
-				for(int j=0;j<img.cols;j++)
-				{
-					double affinity=distanceAffinity(r,c,i,j,scale1);
-					affinity+=vecAffinity<uchar,3>(img.at<Vec3b>(r,c),img.at<Vec3b>(i,j),scale2);
-					affinity+=vecAffinity<double,33>(filteredImg(r,c),filteredImg(i,j),scale3);
-					affinity=exp(affinity);
-					s2+=affinity;
-					s3+=affinity*affinity;
-					mean+=affinity;
-				}
-			}
-		}
-	}
-	mean/=size;
-	double cutoff = sparsity_factor*sqrt(s2*(size*s3/s2-s2))/size;
+	Mat_<Vec<FP_Type,33> > filteredImg = filterImage(img,createFilterBank(11));
+	A.resize(size,size,false);
 	//actual affinity matrix construction
 	for(int r=0;r<img.rows;r++)
 	{
@@ -195,21 +176,23 @@ void createAffinityMatrix(Mat img, double scale1, double scale2, double scale3, 
 			{
 				for(int j=0;j<img.cols;j++)
 				{
-					double affinity=distanceAffinity(r,c,i,j,scale1);
-					affinity+=vecAffinity<uchar,3>(img.at<Vec3b>(r,c),img.at<Vec3b>(i,j),scale2);
-					affinity+=vecAffinity<double,33>(filteredImg(r,c),filteredImg(i,j),scale3);
-					affinity=exp(affinity);
-					if(fabs(mean-affinity)<cutoff)
+					FP_Type affinity=distanceAffinity(r,c,i,j,scale1);
+					affinity+=vecAffinity<uchar,3>(img(r,c),img(i,j),scale2);
+					affinity+=vecAffinity<FP_Type,33>(filteredImg(r,c),filteredImg(i,j),scale3);
+					if(affinity>sparsity_factor)
+					{
+						affinity=exp(affinity);
 						A(r*img.cols+c,i*img.cols+j)=affinity;
+					}
 				}
 			}
 		}
 	}
 	//Create normalized affinity matrix
-	UBMat D((size_t)img.rows*img.cols,(size_t)img.rows*img.cols);
+	D.resize((size_t)img.rows*img.cols,(size_t)img.rows*img.cols,false);
 	for(int i=0;i<size;i++)
 	{
-		double degree=0.0;
+		FP_Type degree=0.0;
 		for(int j=0;j<size;j++)
 		{
 			degree+=A(i,j);
@@ -231,13 +214,13 @@ UBVector eigenSolve(UBMat& N)
 	//First we compute the two lowest eigenvalues, the lowest is guaranteed to be 0
 	//The second smallest is what we are looking for
 	int max_iter = 10*N.size1();
-	double rel_tol = 500*numeric_limits<double>::epsilon();
-	double abs_tol = pow(numeric_limits<double>::epsilon(),2./3);
+	FP_Type rel_tol = 500*numeric_limits<FP_Type>::epsilon();
+	FP_Type abs_tol = pow(numeric_limits<FP_Type>::epsilon(),2./3);
 	int n_lowest_eigenval = 2;
-	vector<double> eigen;
-	vector<double> err;
+	vector<FP_Type> eigen;
+	vector<FP_Type> err;
 	//std::vector<int> multiplicity;
-	lanczos_iteration_nlowest<double> iter(max_iter,n_lowest_eigenval,rel_tol,abs_tol);
+	lanczos_iteration_nlowest<FP_Type> iter(max_iter,n_lowest_eigenval,rel_tol,abs_tol);
 
 	solver.calculate_eigenvalues(iter,mygen);
 	eigen = solver.eigenvalues();
@@ -249,19 +232,19 @@ UBVector eigenSolve(UBMat& N)
 	//Now we compute the eigenvector belonging to the second largest eigenvalue
 
 	vector<UBVector> eigenvectors;
-	Info<double> info;
+	Info<FP_Type> info;
 	solver.eigenvectors(eigen.begin()+1,eigen.end(),back_inserter(eigenvectors),info,mygen);
 
 	return eigenvectors.at(0);
 }
 
-double cut(UBMat& A, UBVector& v, double threshold)
+FP_Type cut(UBMat& A, UBVector& v, FP_Type threshold)
 {
-	double cut=0.0;
-	for(int i=0;i<v.size();i++)
+	FP_Type cut=0.0;
+	for(size_t i=0;i<v.size();i++)
 	{
 		bool lower=v(i)<threshold;
-		for(int j=0;j<v.size();j++)
+		for(size_t j=0;j<v.size();j++)
 		{
 			if(lower && v(j)>=threshold)
 				cut+=A(i,j);
@@ -270,10 +253,10 @@ double cut(UBMat& A, UBVector& v, double threshold)
 	return cut;
 }
 
-double assoc(UBMat& A, UBVector& v, double threshold,bool a)
+FP_Type assoc(UBMat& A, UBVector& v, FP_Type threshold,bool a)
 {
-	double cut=0.0;
-	for(int i=0;i<v.size();i++)
+	FP_Type cut=0.0;
+	for(size_t i=0;i<v.size();i++)
 	{
 		bool lower;
 		if(a)
@@ -282,7 +265,7 @@ double assoc(UBMat& A, UBVector& v, double threshold,bool a)
 			lower=v(i)>=threshold;
 		if(lower)
 		{
-			for(int j=0;j<v.size();j++)
+			for(size_t j=0;j<v.size();j++)
 			{
 				cut+=A(i,j);
 			}
@@ -297,18 +280,18 @@ inline void indexToRowCol(int index, int cols, int& row, int& col)
 	col=index/cols;
 }
 
-Mat_<uchar> getMask(Mat img, UBVector& v, UBMat& A)
+Mat_<uchar> getMask(Mat_<Point_Type> img, UBVector& v, UBMat& A)
 {
 	//find best threshold
-	double best_threshold=0.0;
-	double lowest_cost=DBL_MAX;
-	for(int i=0;i<v.size();i++)
+	FP_Type best_threshold=0.0;
+	FP_Type lowest_cost=FLT_MAX;
+	for(size_t i=0;i<v.size();i++)
 	{
-		double threshold=v(i);
-		double cutAB = cut(A,v,threshold);
-		double assocAV = assoc(A,v,threshold,true);
-		double assocBV = assoc(A,v,threshold,false);
-		double cost = cutAB/assocAV + cutAB/assocBV;
+		FP_Type threshold=v(i);
+		FP_Type cutAB = cut(A,v,threshold);
+		FP_Type assocAV = assoc(A,v,threshold,true);
+		FP_Type assocBV = assoc(A,v,threshold,false);
+		FP_Type cost = cutAB/assocAV + cutAB/assocBV;
 		if(cost<lowest_cost)
 		{
 			lowest_cost=cost;
@@ -317,7 +300,7 @@ Mat_<uchar> getMask(Mat img, UBVector& v, UBMat& A)
 	}
 	Mat_<uchar> mask(img.rows,img.cols);
 	//create Mask
-	for(int i=0;i<v.size();i++)
+	for(size_t i=0;i<v.size();i++)
 	{
 		int r,c;
 		indexToRowCol(i,img.cols,r,c);
@@ -333,10 +316,10 @@ Mat_<uchar> getMask(Mat img, UBVector& v, UBMat& A)
 	return mask;
 }
 
-tuple<Mat,Mat> segment(Mat_<uchar> mask, Mat img)
+tuple<Mat_<Point_Type>,Mat_<Point_Type> > segment(Mat_<uchar> mask, Mat_<Point_Type> img)
 {
-	Mat A(img.size().width,img.size().height,CV_8UC3);
-	Mat B(img.size().width,img.size().height,CV_8UC3);
+	Mat_<Point_Type> A(img.size().width,img.size().height);
+	Mat_<Point_Type> B(img.size().width,img.size().height);
 
 	for(int i=0;i<mask.size().width;i++)
 	{
@@ -344,10 +327,10 @@ tuple<Mat,Mat> segment(Mat_<uchar> mask, Mat img)
 		{
 			if(mask(i,j)==0)
 			{
-				A.at<Vec3b>(i,j)=Vec3b(0,0,0);
+				A(i,j)=Point_Type(0,0,0);
 			}else
 			{
-				A.at<Vec3b>(i,j)=img.at<Vec3b>(i,j);
+				A(i,j)=img(i,j);
 			}
 		}
 	}
@@ -368,15 +351,15 @@ tuple<Mat,Mat> segment(Mat_<uchar> mask, Mat img)
 		{
 			if(inv_mask(i,j)==0)
 			{
-				B.at<Vec3b>(i,j)=Vec3b(0,0,0);
+				B(i,j)=Point_Type(0,0,0);
 			}else
 			{
-				B.at<Vec3b>(i,j)=img.at<Vec3b>(i,j);
+				B(i,j)=img(i,j);
 			}
 		}
 	}
 
-	return tuple<Mat,Mat>(A,B);
+	return tuple<Mat_<Point_Type>,Mat_<Point_Type> >(A,B);
 }
 
 int main(int argc, char ** argv)
@@ -385,20 +368,22 @@ int main(int argc, char ** argv)
 
 	ValueArg<string> imgArg("i","image","the image to be segmented",true,"","string");
 	ValueArg<unsigned int> segArg("n","segments","the number of segments",false,2,"int >= 2");
-	ValueArg<double> sigmaArg("s","scale","scale parameter for affinity matrix construction",false,1.0,"double");
+	ValueArg<FP_Type> sigmaArg("s","scale","scale parameter for affinity matrix construction",false,1.0,"decimal");
 
 	cmdLine.add(imgArg);
 	cmdLine.add(segArg);
 	cmdLine.add(sigmaArg);
 	cmdLine.parse(argc,argv);
 	cout<<imgArg.getValue()<<endl;
-	Mat_<Vec3b> img = imread(imgArg.getValue().c_str());
+	Mat img = imread(imgArg.getValue().c_str());
+
 	//assert(img.depth()==IPL_DEPTH_8U && img.channels()==3);
 
-	Mat_<Vec3f> lab(img.rows,img.cols);
-
+	Mat lab(img.rows,img.cols,img.type());
 	//convert image to a uniform color space
 	cvtColor(img,lab,CV_RGB2Lab);
+	lab.convertTo(lab,CV_64FC3);
+
 	const char * hOrig ="Original";
 	const char * hGrey= "LAB";
 	namedWindow(hOrig,CV_WINDOW_AUTOSIZE);
@@ -407,8 +392,27 @@ int main(int argc, char ** argv)
 	imshow(hOrig,img);
 	imshow(hGrey,lab);
 
+	UBMat A;//Affinity matrix
+	UBMat N;//Normalized affinity matrix
+	UBMat D;//Actually, its D^(-1/2)
+	createAffinityMatrix(lab,1.0,1.0,1.0,A,N,D,-30);
+	UBVector y=prod(D,eigenSolve(N));
+	Mat_<uchar> mask = getMask(lab,y,A);
+	tuple<Mat_<Point_Type>,Mat_<Point_Type> > segmented = segment(mask,img);
+
+	const char * hSegment1="Segment1";
+	const char * hSegment2="Segment2";
+	namedWindow(hSegment1,CV_WINDOW_AUTOSIZE);
+	namedWindow(hSegment2,CV_WINDOW_AUTOSIZE);
+
+	imshow(hSegment1,segmented.get<0>());
+	imshow(hSegment2,segmented.get<1>());
+
 	waitKey(0);
 
 	destroyWindow(hOrig);
 	destroyWindow(hGrey);
+	destroyWindow(hSegment1);
+	destroyWindow(hSegment2);
+
 }
