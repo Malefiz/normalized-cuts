@@ -168,6 +168,7 @@ void createAffinityMatrix(Mat_<Point_Type>  img, FP_Type scale1, FP_Type scale2,
 	Mat_<Vec<FP_Type,33> > filteredImg = filterImage(img,createFilterBank(11));
 	A.resize(size,size,false);
 	//actual affinity matrix construction
+	long nonzero_elements=0;
 	for(int r=0;r<img.rows;r++)
 	{
 		for(int c=0;c<img.cols;c++)
@@ -183,6 +184,7 @@ void createAffinityMatrix(Mat_<Point_Type>  img, FP_Type scale1, FP_Type scale2,
 					{
 						affinity=exp(affinity);
 						A(r*img.cols+c,i*img.cols+j)=affinity;
+						++nonzero_elements;
 					}
 				}
 			}
@@ -213,9 +215,9 @@ UBVector eigenSolve(UBMat& N)
 
 	//First we compute the two lowest eigenvalues, the lowest is guaranteed to be 0
 	//The second smallest is what we are looking for
-	int max_iter = 10*N.size1();
-	FP_Type rel_tol = 500*numeric_limits<FP_Type>::epsilon();
-	FP_Type abs_tol = pow(numeric_limits<FP_Type>::epsilon(),2./3);
+	int max_iter = N.size1();
+	FP_Type rel_tol = 50000*numeric_limits<FP_Type>::epsilon();
+	FP_Type abs_tol = pow(numeric_limits<FP_Type>::epsilon(),20./3);
 	int n_lowest_eigenval = 2;
 	vector<FP_Type> eigen;
 	vector<FP_Type> err;
