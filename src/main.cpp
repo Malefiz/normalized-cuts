@@ -156,6 +156,17 @@ Mat_<Vec<FP_Type,33> > filterImage(Mat_<Point_Type> img, vector<Ptr<FilterEngine
 
 }
 
+struct AdjListEntry{
+public:
+	int j;
+	FP_Type a;
+};
+
+struct AdjList{
+	AdjListEntry * entries;
+	int size;
+};
+
 /**
  * @param A affinity matrix
  * @param img the image
@@ -167,42 +178,63 @@ void createAffinityMatrix(Mat_<Point_Type>  img, FP_Type scale1, FP_Type scale2,
 	int size=(size_t)img.rows*img.cols;
 	Mat_<Vec<FP_Type,33> > filteredImg = filterImage(img,createFilterBank(11));
 	A.resize(size,size,false);
-	//actual affinity matrix construction
-	long nonzero_elements=0;
+	N.resize(size,size,false);
+	D.resize(size,size,false);
+	//Construct an adjacency list
+	AdjList * adjList=new AdjListEntry[size];
 	for(int r=0;r<img.rows;r++)
 	{
 		for(int c=0;c<img.cols;c++)
 		{
-			for(int i=0;i<img.rows;i++)
+			int adjListSize=(max(0,c+5)-max(img.cols,c+5))*(max(0,r+5)-max(img.rows,r+5));
+			AdjListEntry * adjListEntry=new AdjListEntry[adjListSize];
+			adjList[r*img.cols+c].entries=adjListEntry;
+			adjList[r*img.cols+c].size=adjListSize;
+			int k=0;
+			for(int i=max(0,r-5);i<min(img.rows,r+5);i++)
 			{
-				for(int j=0;j<img.cols;j++)
+				for(int j=max(0,c-5);j<min(img.cols,c+5);j++)
 				{
 					FP_Type affinity=distanceAffinity(r,c,i,j,scale1);
 					affinity+=vecAffinity<uchar,3>(img(r,c),img(i,j),scale2);
 					affinity+=vecAffinity<FP_Type,33>(filteredImg(r,c),filteredImg(i,j),scale3);
-					if(affinity>sparsity_factor)
-					{
-						affinity=exp(affinity);
-						A(r*img.cols+c,i*img.cols+j)=affinity;
-						++nonzero_elements;
-					}
+					adjListEntry[k++].a=exp(affinity);
+					adjListEntry[k++].j=i*img.cols+j;
 				}
 			}
 		}
 	}
 	//Create normalized affinity matrix
-	D.resize((size_t)img.rows*img.cols,(size_t)img.rows*img.cols,false);
+	double d[size];
 	for(int i=0;i<size;i++)
 	{
 		FP_Type degree=0.0;
-		for(int j=0;j<size;j++)
+		for(int j=0;j<adjList[i].size;j++)
 		{
-			degree+=A(i,j);
+			A(i,adjList[i]->entries[j].j)=adjList[i]->entries[j].a;
+			degree+=adjList[i]->entries[j].a;
 		}
-		D(i,i)=1.0/sqrt(degree);
+		d[i]=1.0/sqrt(degree+DBL_EPSILON);
+		D(i,i)=d[i];
 	}
-	N=prod(A,D);
-	N=prod(D,N);
+	//Right multiplication with D^(-1/2)
+	for(int i=0;i<size;i++)
+	{
+		int row=i%img.cols;
+		for(int j=0;j<adjList[i].size;j++)
+		{
+			adjList[i].entries[j].a*=d[adjList->entries[i].j];
+		}
+	}
+	//Left multiplication with D^(-1/2)
+	for(int i=0;i<size;i++)
+	{
+		int row=i%img.cols;
+		for(int j=0;j<adjList[i].size;j++)
+		{
+			N(i,adjList[i]->entries[j].j)=adjList[i].entries[j].a*d[i];
+		}
+	}
 }
 
 
